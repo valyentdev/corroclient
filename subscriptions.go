@@ -1,11 +1,11 @@
 package corroclient
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 )
@@ -15,61 +15,25 @@ type event struct {
 	Columns Columns `json:"columns"`
 	Row     []any   `json:"row"`
 	Change  []any   `json:"change"`
+	Error   *string `json:"error"`
 }
 
-func (c *CorroClient) request(req *http.Request) (*http.Response, error) {
-	if c.bearer != "" {
-		req.Header.Set("Authorization", c.bearer)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	return c.c.Do(req)
-}
+var ErrMissedChange = errors.New("corrosubs: missed change")
+var ErrMaxRetryExceeded = errors.New("corrosubs: lost connection")
+var ErrSubscriptionClosed = errors.New("corrosubs: subscription closed")
+var ErrUnrecoverableSub = errors.New("corrosubs: unrecoverable subscription")
 
-func (c *CorroClient) subscribe(ctx context.Context, body io.ReadCloser) (<-chan Event, error) {
-	reader := bufio.NewReader(body)
-	eventChan := make(chan Event)
+var ErrUnknownEvent = errors.New("corroclient: unknown event in subscription")
 
-	go func() {
-		defer body.Close()
-		columns := []string{}
-		for {
-			eventData, _, err := reader.ReadLine()
-			if err != nil {
-				eventChan <- &Error{Message: err.Error()}
-				break
-			}
-
-			var e event
-
-			err = json.Unmarshal(eventData, &e)
-			if err != nil {
-				eventChan <- &Error{Message: err.Error()}
-				break
-			}
-
-			if e.Columns != nil {
-				columns = e.Columns
-				continue
-			}
-			select {
-			case <-ctx.Done():
-				body.Close()
-				close(eventChan)
-				return
-			default:
-				eventChan <- readEvent(e, columns)
-			}
-
-		}
-	}()
-
-	return eventChan, nil
-}
-
-func (c *CorroClient) PostSubscription(ctx context.Context, statement Statement) (*Subscription, error) {
+func (c *CorroClient) postSubscription(ctx context.Context, statement Statement, skipRows bool, from uint64) (*http.Response, error) {
 	data, err := json.Marshal(statement)
 	if err != nil {
 		return nil, err
+	}
+
+	path := fmt.Sprintf("/v1/subscriptions?skip_rows=%t", skipRows)
+	if from != 0 {
+		path += fmt.Sprintf("&from=%d", from)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", c.getURL("/v1/subscriptions"), bytes.NewBuffer(data))
@@ -82,34 +46,31 @@ func (c *CorroClient) PostSubscription(ctx context.Context, statement Statement)
 		return nil, err
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, errors.New("corrosubs: Invalid status code")
+	if resp.StatusCode == http.StatusOK {
+		return resp, nil
 	}
 
-	subscriptionId := resp.Header.Get("Corro-Query-Id")
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, errNotFound
+	}
 
-	subCtx, cancel := context.WithCancel(context.Background())
-	defer func() {
-		if err != nil {
-			cancel()
-		}
-	}()
-
-	eventChan, err := c.subscribe(subCtx, resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Subscription{
-		id:     subscriptionId,
-		ctx:    subCtx,
-		cancel: cancel,
-		events: eventChan,
-	}, nil
+	return nil, fmt.Errorf("corroclient-error: %s", string(body))
 }
 
-func (c *CorroClient) GetSubscription(ctx context.Context, subscriptionId string) (*Subscription, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", c.getURL("/v1/subscriptions/"+subscriptionId), nil)
+var errNotFound = errors.New("corroclient: subscription not found")
+
+func (c *CorroClient) getSub(ctx context.Context, subscriptionId string, skipRows bool, from uint64) (*http.Response, error) {
+	path := fmt.Sprintf("/v1/subscriptions/%s?skip_rows=%t", subscriptionId, skipRows)
+	if from != 0 {
+		path += fmt.Sprintf("&from=%d", from)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", c.getURL(path), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -119,73 +80,14 @@ func (c *CorroClient) GetSubscription(ctx context.Context, subscriptionId string
 		return nil, err
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, errors.New("corrosubs: Invalid status code")
+	if resp.StatusCode == http.StatusOK {
+		return resp, nil
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, errNotFound
 	}
 
-	subCtx, cancel := context.WithCancel(context.Background())
-	defer func() {
-		if err != nil {
-			cancel()
-		}
-	}()
-
-	eventChan, err := c.subscribe(subCtx, resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	return &Subscription{
-		id:     subscriptionId,
-		ctx:    subCtx,
-		cancel: cancel,
-		events: eventChan,
-	}, nil
-}
-
-func readEvent(event event, columns []string) Event {
-	if event.EOQ != nil {
-		return event.EOQ
-	}
-	if event.Columns != nil {
-		return event.Columns
-	}
-	if event.Row != nil {
-		row, err := readRow(event.Row)
-		if err != nil {
-			return &Error{Message: err.Error()}
-		}
-
-		row.columns = columns
-		return row
-	}
-
-	if event.Change != nil {
-		change, err := readChange(event.Change)
-		if err != nil {
-			return &Error{Message: err.Error()}
-		}
-
-		return change
-	}
-	return &Error{Message: "Unknown event type"}
-}
-
-type Subscription struct {
-	id     string
-	ctx    context.Context
-	cancel context.CancelFunc
-	events <-chan Event
-}
-
-func (s *Subscription) Close() {
-	s.cancel()
-}
-
-func (s *Subscription) Events() <-chan Event {
-	return s.events
-}
-
-func (s *Subscription) Id() string {
-	return s.id
+	return nil, errors.New("corrosubs: Invalid status code")
 }

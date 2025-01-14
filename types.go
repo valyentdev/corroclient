@@ -33,7 +33,7 @@ const (
 )
 
 type Change struct {
-	ChangeId   int64      `json:"change_id"`
+	ChangeId   uint64     `json:"change_id"`
 	ChangeType ChangeType `json:"change_type"`
 	Row        *Row       `json:"row"`
 }
@@ -57,7 +57,7 @@ func (r *Row) Type() EventType {
 }
 
 type EOQ struct {
-	ChangeId int64   `json:"change_id"`
+	ChangeId uint64  `json:"change_id"`
 	Time     float64 `json:"time"`
 }
 
@@ -72,11 +72,19 @@ func (c Columns) Type() EventType {
 }
 
 type Error struct {
-	Message string `json:"message"`
+	err error
+}
+
+func (e *Error) Error() string {
+	return e.err.Error()
 }
 
 func (e *Error) Type() EventType {
 	return EventTypeError
+}
+
+func (e *Error) Unwrap() error {
+	return e.err
 }
 
 var ErrInvalidRow = errors.New("corrosubs: Invalid row")
@@ -107,7 +115,7 @@ var ErrInvalidChange = errors.New("corrosubs: Invalid change")
 
 func readChange(data []any) (*Change, error) {
 	if len(data) != 4 {
-		return nil, ErrInvalidRow
+		return nil, ErrInvalidChange
 	}
 
 	changeType, ok := data[0].(string)
@@ -131,7 +139,7 @@ func readChange(data []any) (*Change, error) {
 	}
 
 	return &Change{
-		ChangeId:   int64(changeId),
+		ChangeId:   uint64(changeId),
 		ChangeType: ChangeType(changeType),
 		Row: &Row{
 			rowId:  int64(rowId),

@@ -18,7 +18,7 @@ func (c *CorroClient) Exec(ctx context.Context, stmts []Statement) (*ExecResult,
 
 	buffer := bytes.NewBuffer(payload)
 
-	request, err := http.NewRequest("POST", c.getURL("/v1/transactions"), buffer)
+	request, err := http.NewRequestWithContext(ctx, "POST", c.getURL("/v1/transactions"), buffer)
 	if err != nil {
 		return nil, err
 	}

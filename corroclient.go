@@ -28,3 +28,16 @@ func NewCorroClient(config Config) *CorroClient {
 
 	return corroClient
 }
+
+func (c *CorroClient) request(req *http.Request) (*http.Response, error) {
+	if c.bearer != "" {
+		req.Header.Set("Authorization", c.bearer)
+	}
+	if req.Body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	req.Header.Set("Accept", "application/json")
+
+	return c.c.Do(req)
+}

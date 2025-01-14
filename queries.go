@@ -22,7 +22,7 @@ func (c *CorroClient) Query(ctx context.Context, stmt Statement) (*Rows, error) 
 
 	buffer := bytes.NewBuffer(payload)
 
-	request, err := http.NewRequest("POST", c.getURL("/v1/queries"), buffer)
+	request, err := http.NewRequestWithContext(ctx, "POST", c.getURL("/v1/queries"), buffer)
 	if err != nil {
 		return nil, err
 	}
