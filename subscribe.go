@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log/slog"
 	"time"
 )
 
@@ -137,8 +136,6 @@ func readNextRaw(reader *bufio.Reader) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	slog.Debug("Read line", "line", string(eventData))
 
 	return eventData, nil
 }
