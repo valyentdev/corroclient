@@ -9,7 +9,7 @@ import (
 	"net/http"
 )
 
-func (c *CorroClient) UpdateSchema(ctx context.Context, stmts []Statement) (*ExecResult, error) {
+func (c *CorroClient) UpdateSchema(ctx context.Context, stmts []string) (*ExecResult, error) {
 	payload, err := json.Marshal(stmts)
 	if err != nil {
 		return nil, err
